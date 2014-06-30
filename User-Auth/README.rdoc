@@ -119,7 +119,7 @@ We’ve created a signup page that creates a new user and validates the input da
 
 As previously mentioned, never store passwords in the database as plain text. Encrypting passwords is a best practice and fundamental to all user authentication approaches in Rails.
 
-Hashing Password
+*Hashing Password
 
 Hashing is the process of applying mathematical functions and algorithms to a string of data to produce a unique output string. While creating a new user, the plain text password gets hashed then saved into the database. When the user signs in, the input password gets hashed and compared with the hashed password stored in the database. This technique is called one-way encryption, meaning, the same inputs with the same hashing function will always give the same output.
 
@@ -128,7 +128,7 @@ We can implement a hashed method using SHA1 in Rails with just two lines of code
 require 'digest/sha1'
 encrypted_password= Digest::SHA1.hexdigest(password)
 
-Salting Password
+*Salting Password
 
 Due to some drawbacks that exist in the hashing password technique, like Rainbow tables, salting a password is a more secure way to encrypt passwords. ‘Salt’ is an additional string of data added to the password before encrypting it. It should be unique and random, to render the Rainbow tables flaw useless.
 
@@ -139,7 +139,7 @@ salt= Digest::SHA1.hexdigest("# We add {email} as unique value and #{Time.now} a
 encrypted_password= Digest::SHA1.hexdigest("Adding #{salt} to {password}")
 
 
-Bcrypt
+*Bcrypt
 
 There’s another easy way to encrypt passwords rather than making a salt from scratch: use bcrypt. bcrypt-ruby is a ruby gem for encryption and we’ll use it in our application.
 
@@ -190,8 +190,199 @@ attr_protected: all attributes marked with attr_protected are ignored during mas
 attr_accessible: all attributes marekd with attr_accessible are accessible during mass assignment and all other attributes will be protected.
 Finally let’s add the accessible attributes into user model
 
-1
 attr_accessible :username, :email, :password, :password_confirmation
 
+==Authentication Method
+
+As we can now save encrypted passwords in the database, it’s time to setup the authentication method that will take a username/email and password to find out if that matches a user in the database. We need a query to match username/email and, if found, encrypt the entered password and compare it with the encrypted password in the database.
+
+Let’s write an authentication method in the user model
 
 
+def self.authenticate(username_or_email="", login_password="")
+  if  EMAIL_REGEX.match(username_or_email)    
+    user = User.find_by_email(username_or_email)
+  else
+    user = User.find_by_username(username_or_email)
+  end
+  if user && user.match_password(login_password)
+    return user
+  else
+    return false
+  end
+end   
+def match_password(login_password="")
+  encrypted_password == BCrypt::Engine.hash_secret(login_password, salt)
+end
+
+We see that if login_password matches, we return the user object. Otherwise, the method returns false.
+
+==Sessions Controller and Login form template
+
+With our authentication method in place, let’s generate the sessions controller. The SessionsController will have create login, home, profile and setting actions.
+
+
+$ rails g controller sessions login, home, profile, setting 
+
+Let’s focus on the login template. The act of logging in consists of a form that accepts username/email and password, passing the values to the login_attempt action.
+
+
+<% @page_title = "UserAuth | Login" -%>
+<div class= "Sign_Form">
+  <h1>Log in</h1>
+  <%= form_tag(:action => 'login_attempt') do %>
+    <p>Username or Email:</br> <%= text_field_tag(:username_or_email) %></p> 
+    <p>Password:</br> <%= password_field_tag :login_password %></p> 
+    <%= submit_tag("Log In") %>
+  <% end %>
+</div>
+
+
+==Creating `login_attempt` Action
+
+The login_attempt action accepts params from the login form and passes it to the authentication method we created previously. If the user is found, we redirect to the home action. Otherwise, we’ll render the login template again.
+
+class SessionsController < ApplicationController
+  def login
+    #Login Form
+  end
+  def login_attempt
+    authorized_user = User.authenticate(params[:username_or_email],params[:login_password])
+    if authorized_user
+      flash[:notice] = "Wow Welcome again, you logged in as #{authorized_user.username}"
+      redirect_to(:action => 'home')
+    else
+      flash[:notice] = "Invalid Username or Password"
+      flash[:color]= "invalid"
+      render "login"  
+    end
+  end
+end
+
+
+There is something missing here. We need to save the logged-in state of the user. If we don’t, we’ll have to authenticate before each requested action, which is not DRY and can be expensive. We’ll use the session to keep track of the user state, checking it before every request from the user.
+
+Let’s see how that is done.
+
+
+
+==Cookies, Sessions and Super-Cookies
+
+*Cookies:
+
+We know that when a user sends a request to the web server, it is treated as a new request. The web server is stateless, meaning, it doesn’t know or care about previous requests. A simple solution to passing state between requests is cookies. The web server sends data in a cookie file to the browser, which saves it and sends the cookie data back with each request.
+
+Using cookies in Rails is a snap:
+
+
+cookies[:name]= "Azzurrio"
+
+*Sessions:
+
+However, due to some limitations of cookies, such as 4kb max size and the fact that they can be read, altered or deleted, we will use sessions. Using sessions, the web server sends an ID in the cookie file to the browser. The ID is sent back on each request and is used to pull data out of the session, which is stored on the server.
+
+Using sessions in Rails is, like cookies, simple:
+
+
+session[:name]= "Azzurrio"
+
+*Super-Cookie:
+
+Writing the session information to persistant storage, such as a file or database, doesn’t scale well. Instead, we will use cookie storage, which is very fast and secure. This so-called super-cookie is encrypted and placed in the session, ensuring that the user can not read or alter it.
+
+Session Configuration:Inside the config/initializers folder, you’ll find two configuration files for sessions. The first is session_store.rb, which is used to configure the storage option you want to use ( cookie_store is the default option.) The second is secret_token.rb, which contains the string that Rails use to encrypt the cookie file.
+
+Now let’s get back to our application and save the login state in the session if the user is authorized. Back in the login_attempt action
+
+
+def login_attempt
+  authorized_user = User.authenticate(params[:username_or_email],params[:login_password])
+  if authorized_user
+    session[:user_id] = authorized_user.id
+    flash[:notice] = "Wow Welcome again, you logged in as #{authorized_user.username}"
+    redirect_to(:action => 'home')
+  else
+    flash[:notice] = "Invalid Username or Password"
+    flash[:color]= "invalid"
+    render "login"  
+  end
+end
+
+Here, we’ve created a user_id session key, storing the authorized user id. This will be retrieved on subsequent requests.
+
+Note:It is a good practice to always store the ID that refers to the object in the session file, not the object itself. The reasoning here is, simply, an ID value is small and a whole user object is much larger. The ID can be used to retrieve the user, if needed.
+
+
+==Access Restriction
+
+We need to check the session file every time the user requests some protected action. To do this, we are going use the before_filter method.
+
+before_filter is a method to perform a function before the specific action is executed. It smells a lot like callbacks, but filters are for controllers while callbacks are for models.
+
+The before_filter method takes the name of the method to run before the action. The second parameter is a list of actions that we want to filter. Let’s add it to our application.
+
+In the ApplicationController, which is the superclass of all our controllers, add:
+
+
+protected 
+def authenticate_user
+  if session[:user_id]
+     # set current user object to @current_user object variable
+    @current_user = User.find session[:user_id] 
+    return true 
+  else
+    redirect_to(:controller => 'sessions', :action => 'login')
+    return false
+  end
+end
+def save_login_state
+  if session[:user_id]
+    redirect_to(:controller => 'sessions', :action => 'home')
+    return false
+  else
+    return true
+  end
+end
+
+The authenticate_user method checks if the user_id session is available. If so, it assigns the user object to the @current_user instance variable and returns true, allowing the action to be executed. If not, return false and redirect the to the login page. The other method, called save_login_state, prevents the user from accessing the signup and login pages whilst logged in.
+
+Add the before_filter calls to SessionsController
+
+
+before_filter :authenticate_user, :only => [:home, :profile, :setting]
+before_filter :save_login_state, :only => [:login, :login_attempt]
+
+and to UsersController
+
+
+before_filter :save_login_state, :only => [:new, :create]
+
+The @current_user value can be used in the templates, now, to present information about the logged in user.
+
+
+<h2 class='User_Header'> <%=@current_user.username%> Profile <h2>
+
+
+==Logout
+
+Our cycle would be incomplete without some way to log out of the session. Logging out, as I mentioned before, clears out the session variable and redirects to the login page.
+
+def logout
+  session[:user_id] = nil
+  redirect_to :action => 'login'
+end
+
+
+
+==Routes Configuration
+
+Finally, before you can test your code, edit your routes file as follows:
+
+
+root :to => "sessions#login"
+match "signup", :to => "users#new"
+match "login", :to => "sessions#login"
+match "logout", :to => "sessions#logout"
+match "home", :to => "sessions#home"
+match "profile", :to => "sessions#profile"
+match "setting", :to => "sessions#setting"
